@@ -122,7 +122,7 @@ func TestCrashBetweenSendAndAckRedeliversSameKey(t *testing.T) {
 		t.Fatalf("redelivery must reuse stable key: %+v", second)
 	}
 
-	if err := store.Ack(key); err != nil {
+	if err := store.Ack(key, second[0].Attempts); err != nil {
 		t.Fatal(err)
 	}
 	if got := store.Claim("worker-3", 10, time.Minute); len(got) != 0 {

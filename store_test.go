@@ -67,16 +67,24 @@ func TestAckIsTerminalAndIdempotent(t *testing.T) {
 	svc.Receive(ev("s", 1))
 
 	key := deliveryKey("s", "s-e1")
-	if err := svc.AckDelivery(key); err != nil {
+	claimed := store.Claim("w", 10, time.Minute)
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d", len(claimed))
+	}
+	if err := svc.AckDelivery(key, claimed[0].Attempts); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AckDelivery(key); err != nil {
+	// 重复确认幂等；旧尝试号的迟到确认也不能影响终态。
+	if err := svc.AckDelivery(key, claimed[0].Attempts); err != nil {
 		t.Fatalf("double ack should be a no-op: %v", err)
+	}
+	if err := svc.AckDelivery(key, claimed[0].Attempts-1); err != nil {
+		t.Fatalf("late ack of terminal delivery should be a no-op: %v", err)
 	}
 	if got := store.Claim("w", 10, time.Minute); len(got) != 0 {
 		t.Fatalf("acked delivery must never return to pending: %+v", got)
 	}
-	if err := svc.AckDelivery("s/nope"); !errors.Is(err, ErrDeliveryNotFound) {
+	if err := svc.AckDelivery("s/nope", 1); !errors.Is(err, ErrDeliveryNotFound) {
 		t.Fatalf("unknown key: got %v", err)
 	}
 }

@@ -133,12 +133,53 @@ func (s *Service) Receive(ev Event) (Receipt, error) {
 	return receipt, nil
 }
 
-// AckDelivery 确认一条投递成功，之后该投递永远不会重新待投递。
-func (s *Service) AckDelivery(key string) error {
-	return s.store.Ack(key)
+// AckDelivery 确认一条投递成功。attempt 必须是领取时拿到的尝试号：
+// 只有当前领取尝试能够确认，租约被接管后旧发送者的确认返回
+// ErrStaleAttempt。确认成功后该投递永远不会重新待投递。
+func (s *Service) AckDelivery(key string, attempt int) error {
+	return s.store.Ack(key, attempt)
 }
 
-// Backlog 查询来源积压：期望序号、缺口后缓冲的序号、outbox 各状态数量。
+// RetryDeadLetter 操作员选择重试来源 sourceID 中序号 seq 的死信。
+// 投递回到待投递，由下一轮领取生成新的尝试号，但沿用原稳定投递键。
+// decisionID 必须唯一；用同一决定号重放本操作幂等返回首次决定。
+// 同一来源存在多个死信时，必须先处置序号最小的一条。
+func (s *Service) RetryDeadLetter(sourceID string, seq int64, decisionID string) (Decision, error) {
+	if sourceID == "" || decisionID == "" {
+		return Decision{}, fmt.Errorf("%w: source id 与 decision id 不能为空", ErrInvalidArgument)
+	}
+	return s.store.RetryDeadLetter(sourceID, seq, decisionID)
+}
+
+// SkipDeadLetter 操作员明确跳过来源 sourceID 中序号 seq 的死信。
+// 必须给出跳过原因 reason 和唯一决定号 decisionID。该序号被记为已处置
+// （终态 skipped），之后连续序列才允许继续释放；跳过后任何迟到成功
+// 确认都不能把它恢复为已投递。
+func (s *Service) SkipDeadLetter(sourceID string, seq int64, decisionID, reason string) (Decision, error) {
+	if sourceID == "" || decisionID == "" || reason == "" {
+		return Decision{}, fmt.Errorf("%w: source id、decision id 与 reason 均不能为空", ErrInvalidArgument)
+	}
+	return s.store.SkipDeadLetter(sourceID, seq, decisionID, reason)
+}
+
+// DeadLetters 查询死信。sourceID 为空时查询全部来源；
+// unresolvedOnly 为真时只返回等待处置的记录，按（来源，序号）升序。
+func (s *Service) DeadLetters(sourceID string, unresolvedOnly bool) []DeadLetter {
+	return s.store.DeadLetters(sourceID, unresolvedOnly)
+}
+
+// Attempts 查询领取尝试记录。sourceID 为空时查询全部来源。
+func (s *Service) Attempts(sourceID string) []ClaimAttempt {
+	return s.store.Attempts(sourceID)
+}
+
+// Decisions 查询全部处置决定（重试/跳过），按创建顺序升序。
+func (s *Service) Decisions() []Decision {
+	return s.store.Decisions()
+}
+
+// Backlog 查询来源积压：期望序号、缺口后缓冲的序号、outbox 各状态数量、
+// 以及当前阻塞序号（最小的未处置死信序号）。
 func (s *Service) Backlog(sourceID string) (Backlog, error) {
 	return s.store.Backlog(sourceID)
 }

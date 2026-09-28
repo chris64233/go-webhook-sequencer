@@ -2,6 +2,7 @@ package webhooksequencer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -46,7 +47,9 @@ func NewDispatcher(store *Store, t Transport) *Dispatcher {
 }
 
 // DispatchOnce 领取一批租约并逐条投递，返回本次确认成功的条数。
-// 发送失败的条目保留租约，到期后由后续轮次或其他 worker 重试。
+// 发送失败的条目会记录最后一次失败详情并保留租约，到期后由后续轮次
+// 或其他 worker 重试；达到最大投递次数后进入死信。确认时若租约已被
+// 接管或来源被死信阻塞，该条跳过但不中断本轮。
 func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 	claimed := d.store.Claim(d.Owner, d.Batch, d.Lease)
 	sent := 0
@@ -55,9 +58,13 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 			return sent, err
 		}
 		if err := d.transport.Send(ctx, dv); err != nil {
+			d.store.Fail(dv.Key, dv.LeaseID, err)
 			continue
 		}
-		if err := d.store.Ack(dv.Key); err != nil {
+		if err := d.store.Ack(dv.Key, dv.LeaseID); err != nil {
+			if errors.Is(err, ErrStaleLease) || errors.Is(err, ErrSourceBlocked) {
+				continue
+			}
 			return sent, err
 		}
 		sent++

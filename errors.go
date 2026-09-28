@@ -15,6 +15,19 @@ var (
 	ErrSourceNotFound = errors.New("source not found")
 	// ErrDeliveryNotFound 表示待确认的投递不存在。
 	ErrDeliveryNotFound = errors.New("delivery not found")
+	// ErrStaleLease 表示确认者持有的租约已被接管或已失效：
+	// 旧发送者不得确认当前任务，迟到的确认也不能改变终态。
+	ErrStaleLease = errors.New("stale lease")
+	// ErrSourceBlocked 表示来源被更早序号的死信阻塞，后续序号不得绕过它确认。
+	ErrSourceBlocked = errors.New("source blocked by dead letter")
+	// ErrDeadLetterNotFound 表示死信记录不存在。
+	ErrDeadLetterNotFound = errors.New("dead letter not found")
+	// ErrDeadLetterNotOpen 表示死信已被处置（重试或跳过），不能重复处置。
+	ErrDeadLetterNotOpen = errors.New("dead letter already disposed")
+	// ErrDeadLetterOrder 表示同一来源的死信必须按序号从小到大处置。
+	ErrDeadLetterOrder = errors.New("dead letters must be disposed in seq order")
+	// ErrDecisionConflict 表示决定号已被用于其他死信。
+	ErrDecisionConflict = errors.New("decision id already used")
 )
 
 // SeqConflictError 表示序号冲突：同一序号对应了不同的事件，

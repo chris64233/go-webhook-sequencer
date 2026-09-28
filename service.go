@@ -133,12 +133,56 @@ func (s *Service) Receive(ev Event) (Receipt, error) {
 	return receipt, nil
 }
 
-// AckDelivery 确认一条投递成功，之后该投递永远不会重新待投递。
-func (s *Service) AckDelivery(key string) error {
-	return s.store.Ack(key)
+// AckDelivery 确认一次领取尝试投递成功，之后该投递永远不会重新待投递。
+// 只有持有当前租约（leaseID 来自 Claim 返回的 Delivery.LeaseID）的发送者
+// 才能确认；租约被接管后的迟到确认返回 ErrStaleLease，
+// 来源被死信阻塞时返回 ErrSourceBlocked。
+func (s *Service) AckDelivery(key string, leaseID int64) error {
+	return s.store.Ack(key, leaseID)
 }
 
-// Backlog 查询来源积压：期望序号、缺口后缓冲的序号、outbox 各状态数量。
+// RetryDeadLetter 重试死信：沿用原投递键重新入队，后续领取会生成新的
+// 领取尝试。同一来源存在多个死信时必须按序号从小到大处置，
+// 否则返回 ErrDeadLetterOrder。
+func (s *Service) RetryDeadLetter(key string) (DeadLetter, error) {
+	if key == "" {
+		return DeadLetter{}, fmt.Errorf("%w: key 不能为空", ErrInvalidArgument)
+	}
+	return s.store.RetryDeadLetter(key)
+}
+
+// SkipDeadLetter 跳过死信：需要非空原因与全局唯一的决定号。
+// 跳过生效后该序号记为已处置，连续序列继续推进；任何迟到的确认
+// 都不能把它恢复为已投递。同一决定号重复提交相同决定是幂等 no-op。
+func (s *Service) SkipDeadLetter(key, decisionID, reason string) (Decision, error) {
+	if key == "" || decisionID == "" || reason == "" {
+		return Decision{}, fmt.Errorf("%w: key/decisionID/reason 均不能为空", ErrInvalidArgument)
+	}
+	return s.store.SkipDeadLetter(key, decisionID, reason)
+}
+
+// DeadLetters 查询死信记录（按来源、序号升序）；sourceID 为空时返回全部来源。
+func (s *Service) DeadLetters(sourceID string) []DeadLetter {
+	return s.store.DeadLetters(sourceID)
+}
+
+// DeliveryAttempts 查询一条投递的领取尝试历史（按租约编号升序）。
+func (s *Service) DeliveryAttempts(key string) []Attempt {
+	return s.store.DeliveryAttempts(key)
+}
+
+// Decisions 查询处置决定（按来源、序号升序）；sourceID 为空时返回全部来源。
+func (s *Service) Decisions(sourceID string) []Decision {
+	return s.store.Decisions(sourceID)
+}
+
+// BlockingSeq 查询当前阻塞来源确认推进的最小死信号；0 表示未阻塞。
+func (s *Service) BlockingSeq(sourceID string) int64 {
+	return s.store.BlockingSeq(sourceID)
+}
+
+// Backlog 查询来源积压：期望序号、缺口后缓冲的序号、outbox 各状态数量、
+// 待处置死信数量与当前阻塞序号。
 func (s *Service) Backlog(sourceID string) (Backlog, error) {
 	return s.store.Backlog(sourceID)
 }

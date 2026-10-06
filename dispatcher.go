@@ -31,17 +31,21 @@ type Dispatcher struct {
 	Lease time.Duration
 	// Batch 是单次领取的最大条数，默认 100。
 	Batch int
+	// MaxAttempts 是单条投递的最大尝试次数，超过后转为死信，默认 5。
+	// 死信只能由重放计划重新入队或转入人工处理。
+	MaxAttempts int
 }
 
 // NewDispatcher 构造投递器。
 func NewDispatcher(store *Store, t Transport) *Dispatcher {
 	host, _ := os.Hostname()
 	return &Dispatcher{
-		store:     store,
-		transport: t,
-		Owner:     fmt.Sprintf("%s/%d", host, os.Getpid()),
-		Lease:     30 * time.Second,
-		Batch:     100,
+		store:       store,
+		transport:   t,
+		Owner:       fmt.Sprintf("%s/%d", host, os.Getpid()),
+		Lease:       30 * time.Second,
+		Batch:       100,
+		MaxAttempts: 5,
 	}
 }
 
@@ -55,6 +59,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 			return sent, err
 		}
 		if err := d.transport.Send(ctx, dv); err != nil {
+			d.store.Fail(dv.Key, d.MaxAttempts)
 			continue
 		}
 		if err := d.store.Ack(dv.Key); err != nil {

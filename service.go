@@ -3,6 +3,7 @@ package webhooksequencer
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 // keyMutex 按来源加锁：同一来源串行，不同来源并行。
@@ -141,4 +142,45 @@ func (s *Service) AckDelivery(key string) error {
 // Backlog 查询来源积压：期望序号、缺口后缓冲的序号、outbox 各状态数量。
 func (s *Service) Backlog(sourceID string) (Backlog, error) {
 	return s.store.Backlog(sourceID)
+}
+
+// PlanReplay 为来源的 [fromSeq, toSeq] 区间制定死信重放计划：
+// 计划固定事件范围、起始序号、截止时间和当前确认位置。
+//   - 已成功投递（已确认）的事件不会重新入队；
+//   - 从确认位置起按原序号连续入队，遇到序号缺口必须停住；
+//   - 相同范围的重复请求返回原计划；范围或版本改变返回 ReplayConflictError。
+func (s *Service) PlanReplay(sourceID string, fromSeq, toSeq int64, window time.Duration) (ReplayPlan, error) {
+	if sourceID == "" || fromSeq < 1 || toSeq < fromSeq || window <= 0 {
+		return ReplayPlan{}, fmt.Errorf("%w: source_id 不能为空，1 <= fromSeq <= toSeq 且 window 必须为正", ErrInvalidArgument)
+	}
+	unlock := s.locks.lock(sourceID)
+	defer unlock()
+	return s.store.PlanReplay(sourceID, fromSeq, toSeq, window)
+}
+
+// ExpireReplay 结算窗口已过期的重放计划：未确认序号按原始顺序转入
+// 人工处理，对应投递转为死信；事件保留原序号，不删除、不重新编号。
+func (s *Service) ExpireReplay(sourceID string) (ReplayPlan, error) {
+	if sourceID == "" {
+		return ReplayPlan{}, fmt.Errorf("%w: source_id 不能为空", ErrInvalidArgument)
+	}
+	unlock := s.locks.lock(sourceID)
+	defer unlock()
+	return s.store.ExpirePlan(sourceID)
+}
+
+// ReplayStatus 查询来源的重放计划与人工处理队列（按原始序号升序）。
+func (s *Service) ReplayStatus(sourceID string) (ReplayPlan, []ManualEntry, error) {
+	return s.store.ReplayStatus(sourceID)
+}
+
+// ResolveManual 人工处理缺口位置的条目。只能从当前确认位置继续，
+// 不能把后面的事件重排成另一条序列；已处理的序号不可重复消费。
+func (s *Service) ResolveManual(sourceID string, seq int64) (ReplayPlan, error) {
+	if sourceID == "" || seq <= 0 {
+		return ReplayPlan{}, fmt.Errorf("%w: source_id 不能为空且 seq 必须为正", ErrInvalidArgument)
+	}
+	unlock := s.locks.lock(sourceID)
+	defer unlock()
+	return s.store.ResolveManual(sourceID, seq)
 }

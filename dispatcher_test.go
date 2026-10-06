@@ -141,3 +141,55 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// 超过 MaxAttempts 的投递转为死信，不再被领取；
+// 制定重放计划后重新入队，窗口内可按原序号继续投递。
+func TestDeliveryDiesAfterMaxAttemptsThenReplayRevives(t *testing.T) {
+	svc, store := setup(t, 1)
+	key := deliveryKey("s", "s-e1")
+	tr := &recordingTransport{failKeys: map[string]bool{key: true}}
+	d := NewDispatcher(store, tr)
+	d.MaxAttempts = 2
+	d.Lease = time.Minute
+
+	base := time.Now()
+	store.now = func() time.Time { return base }
+	if sent, _ := d.DispatchOnce(context.Background()); sent != 0 {
+		t.Fatalf("attempt 1: sent=%d", sent)
+	}
+	store.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if sent, _ := d.DispatchOnce(context.Background()); sent != 0 {
+		t.Fatalf("attempt 2: sent=%d", sent)
+	}
+	dv, _ := store.Delivery(key)
+	if dv.Status != DeliveryDead || dv.Attempts != 2 {
+		t.Fatalf("delivery should be dead: %+v", dv)
+	}
+	// 死信不被领取。
+	store.now = func() time.Time { return base.Add(4 * time.Minute) }
+	if sent, _ := d.DispatchOnce(context.Background()); sent != 0 {
+		t.Fatalf("dead must not be claimed: sent=%d", sent)
+	}
+	if b, _ := svc.Backlog("s"); b.Dead != 1 {
+		t.Fatalf("backlog: %+v", b)
+	}
+
+	// 重放计划把死信重新入队，序号不变。
+	if _, err := svc.PlanReplay("s", 1, 1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	dv, _ = store.Delivery(key)
+	if dv.Status != DeliveryPending || dv.Seq != 1 {
+		t.Fatalf("replayed delivery: %+v", dv)
+	}
+	tr.failKeys = map[string]bool{}
+	if sent, _ := d.DispatchOnce(context.Background()); sent != 1 {
+		t.Fatalf("replay dispatch: sent=%d", sent)
+	}
+	if got := tr.keys(); !equalStrings(got, []string{key}) {
+		t.Fatalf("sent keys %v", got)
+	}
+	if b, _ := svc.Backlog("s"); b.Acked != 1 || b.Dead != 0 {
+		t.Fatalf("backlog after replay: %+v", b)
+	}
+}
